@@ -1,0 +1,115 @@
+<script>
+/* 7.2 แผนและกิจกรรม */
+(function () {
+  const U = window.UI, h = U.h, icon = U.icon;
+  const CAL_TH = { sent: 'ส่งแล้ว', due: 'ถึงรอบแต่ยังไม่ส่ง', plan: 'มีแผน', none: 'ไม่มีแผน' };
+
+  function defaults() { return { q: '', status: 'all', owner: 'all', values: [] }; }
+
+  window.Views.activities = async function (main, params, ctx) {
+    const d = await U.api('apiGetActivities', U.App.fy);
+    if (!ctx.alive()) return;
+    const f = U.App.filters = U.App.filters || defaults();
+    if (params.value) f.values = [Number(params.value)];
+
+    const groups = [];
+    d.items.forEach(function (i) {
+      let g = groups.filter(function (x) { return x.group_no === i.group_no; })[0];
+      if (!g) groups.push(g = { group_no: i.group_no, value_code: i.value_code, value_name: i.value_name, dimension: i.dimension });
+    });
+
+    const tableSlot = h('div');
+    const countEl = h('span', { class: 'num', style: 'font-weight:600;color:var(--text)', 'aria-live': 'polite' });
+    const chipsEl = h('div', { role: 'group', 'aria-label': 'กรองตามค่านิยม', style: 'display:flex;flex-wrap:wrap;gap:8px;align-items:center' });
+    const qInput = h('input', { class: 'field', type: 'search', id: 'f-q', placeholder: 'ชื่อกิจกรรม ตัวชี้วัด หรือผู้รับผิดชอบ', value: f.q, oninput: function (e) { f.q = e.target.value; update(); } });
+    const stSel = h('select', { class: 'field', id: 'f-st', onchange: function (e) { f.status = e.target.value; update(); } },
+      h('option', { value: 'all' }, 'ทุกสถานะ'), U.STATUS_ORDER.map(function (k) { return h('option', { value: k }, U.STATUS[k].g + ' ' + U.STATUS[k].t); }));
+    const owSel = h('select', { class: 'field', id: 'f-ow', onchange: function (e) { f.owner = e.target.value; update(); } },
+      h('option', { value: 'all' }, 'ทุกหน่วยงาน'), d.owners.map(function (o) { return h('option', { value: o }, o); }));
+
+    function match(i) {
+      const q = f.q.trim().toLowerCase();
+      return (f.status === 'all' || i.status === f.status) && (f.owner === 'all' || i.owner_unit === f.owner) &&
+        (!f.values.length || f.values.indexOf(i.group_no) >= 0) &&
+        (!q || (i.no + ' ' + i.name + ' ' + i.kpi + ' ' + i.owner_unit + ' ' + i.target_group).toLowerCase().indexOf(q) >= 0);
+    }
+    function clear() { U.App.filters = defaults(); Object.assign(f, U.App.filters); qInput.value = ''; stSel.value = 'all'; owSel.value = 'all'; update(); qInput.focus(); }
+    const filtered = function () { return f.q.trim() || f.status !== 'all' || f.owner !== 'all' || f.values.length; };
+
+    function row(i) {
+      const cur = d.currentPeriod;
+      const sent = i.cal.filter(function (k) { return k === 'sent'; }).length;
+      const dueN = i.cal.filter(function (k, idx) { return k === 'sent' || k === 'due' || (k === 'plan' && idx + 1 < cur); }).length;
+      return h('div', { role: 'row', class: 'tr data' },
+        h('span', { role: 'cell', class: 'num', style: 'font-weight:700;color:var(--brand-700)' }, i.no),
+        h('span', { role: 'cell', style: 'min-width:0;line-height:1.5' }, U.link('report', { id: i.activity_id }, { class: 't' }, i.name),
+          h('span', { class: 'muted', style: 'display:block;font-size:13px;margin-top:2px' }, i.target_group + ' · ' + i.owner_unit)),
+        h('span', { role: 'cell', style: 'font-size:14px;color:var(--text-2);line-height:1.5' }, i.kpi),
+        h('span', { role: 'cell' }, h('span', { class: 'num', style: 'font-weight:700' }, U.fmtNum(i.value)),
+          h('span', { class: 'num muted', style: 'font-size:13px' }, ' / ' + U.fmtNum(i.target_value) + ' ' + i.unit),
+          h('span', { style: 'display:block;margin-top:6px' }, U.progress(i.progress, 'ความคืบหน้า ' + U.pct(i.progress) + '%', 'thin'))),
+        h('span', { role: 'cell' },
+          h('span', { class: 'cal', 'aria-hidden': 'true' }, i.cal.map(function (k, idx) {
+            return h('span', { class: 'c c-' + k + (idx + 1 === cur ? ' c-now' : ''), title: U.MONTHS[idx] + ': ' + CAL_TH[k] });
+          })),
+          h('span', { class: 'sr' }, 'ส่งแล้ว ' + sent + ' จาก ' + dueN + ' รอบที่ถึงกำหนด')),
+        h('span', { role: 'cell' }, U.chip(i.status)));
+    }
+
+    function update() {
+      U.fill(chipsEl, h('span', { style: 'font-size:13px;font-weight:600;color:var(--text-2);margin-right:4px' }, 'ค่านิยม'),
+        groups.map(function (g) {
+          const on = f.values.indexOf(g.group_no) >= 0;
+          return h('button', {
+            type: 'button', class: 'vchip', 'aria-pressed': on ? 'true' : 'false', onclick: function () {
+              f.values = on ? f.values.filter(function (x) { return x !== g.group_no; }) : f.values.concat([g.group_no]);
+              update();
+            }
+          }, h('strong', null, g.value_code), g.value_name);
+        }),
+        filtered() ? h('button', { type: 'button', class: 'btn btn-t', onclick: clear }, 'ล้างตัวกรอง') : null);
+      const items = d.items.filter(match);
+      countEl.textContent = 'แสดง ' + items.length + ' จาก ' + d.items.length + ' กิจกรรม';
+      if (!items.length) {
+        U.fill(tableSlot, U.emptyState('ไม่พบกิจกรรมที่ตรงกับตัวกรอง', 'ลองเปลี่ยนคำค้นหา หรือเลือกค่านิยม/สถานะอื่น',
+          h('button', { class: 'btn btn-p', type: 'button', onclick: clear }, 'ล้างตัวกรองทั้งหมด')));
+        return;
+      }
+      U.fill(tableSlot, h('section', { class: 'glass', style: 'overflow:hidden' }, h('div', { class: 'scroll-x' },
+        h('div', { role: 'table', class: 'tbl', 'aria-label': 'แผนและกิจกรรม ปี ' + d.fy },
+          h('div', { role: 'rowgroup' }, h('div', { role: 'row', class: 'tr thead' },
+            ['ลำดับ', 'กิจกรรม / ผู้รับผิดชอบ', 'ตัวชี้วัด', 'ผล / เป้า'].map(function (t) { return h('span', { role: 'columnheader' }, t); }),
+            h('span', { role: 'columnheader' }, h('span', { class: 'qhead' }, ['ไตรมาส 1', 'ไตรมาส 2', 'ไตรมาส 3', 'ไตรมาส 4'].map(function (q) { return h('span', null, q); }))),
+            h('span', { role: 'columnheader' }, 'สถานะ'))),
+          groups.map(function (g) {
+            const rows = items.filter(function (i) { return i.group_no === g.group_no; });
+            if (!rows.length) return null;
+            return h('div', { role: 'rowgroup' },
+              h('div', { role: 'row', class: 'tgroup' }, h('span', { role: 'cell', style: 'display:flex;align-items:center;gap:12px' },
+                h('span', { class: 'vletter', 'aria-hidden': 'true' }, g.value_code), h('strong', null, g.value_name),
+                h('span', { style: 'color:var(--text-2);font-size:14px' }, '· ' + g.dimension))),
+              rows.map(row));
+          })))));
+    }
+
+    stSel.value = f.status;
+    owSel.value = f.owner;
+    const legend = h('div', { style: 'display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;font-size:13px;color:var(--text-2)' }, countEl,
+      ['sent', 'due', 'plan', 'none'].map(function (k) {
+        return h('span', { style: 'display:flex;align-items:center;gap:6px' }, h('span', { class: 'c c-' + k, 'aria-hidden': 'true' }), k === 'plan' ? 'แผนรอบถัดไป' : CAL_TH[k]);
+      }),
+      d.currentPeriod >= 1 && d.currentPeriod <= 12 ? h('span', { style: 'display:flex;align-items:center;gap:8px' }, h('span', { class: 'c c-plan c-now', 'aria-hidden': 'true' }), 'เดือนปัจจุบัน (' + U.MONTHS[d.currentPeriod - 1] + ')') : null);
+
+    U.fill(main, 
+      U.pageHeader({ eyebrow: 'ปีงบประมาณ ' + d.fy + ' · ต.ค. ' + (d.fy - 1) + ' – ก.ย. ' + d.fy, title: 'แผนและกิจกรรม' }),
+      h('section', { class: 'glass filters', 'aria-label': 'ตัวกรอง' },
+        h('div', { class: 'frow' },
+          h('label', { class: 'label', style: 'flex:3 1 280px', for: 'f-q' }, 'ค้นหา', h('span', { class: 'search' }, icon('search'), qInput)),
+          h('label', { class: 'label', style: 'flex:1 1 180px', for: 'f-st' }, 'สถานะ', stSel),
+          h('label', { class: 'label', style: 'flex:1 1 200px', for: 'f-ow' }, 'ผู้รับผิดชอบ', owSel)),
+        chipsEl),
+      legend, tableSlot);
+    update();
+  };
+})();
+</script>

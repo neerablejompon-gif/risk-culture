@@ -1,0 +1,289 @@
+<script>
+/* Shell, routing, API bridge และ UI helpers — ห้ามใช้ innerHTML กับข้อมูล ใช้ h()/textContent เท่านั้น */
+(function () {
+  'use strict';
+  const NS = 'http://www.w3.org/2000/svg';
+  const HAS_GAS = typeof google !== 'undefined' && google.script && google.script.run;
+  const MONTHS = ['ต.ค.', 'พ.ย.', 'ธ.ค.', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.'];
+  const STATUS = {
+    DONE: { t: 'เสร็จสิ้น', g: '✓', c: 'done' },
+    ON_TRACK: { t: 'ตามแผน', g: '●', c: 'ok' },
+    LATE: { t: 'ล่าช้า', g: '!', c: 'late' },
+    BELOW_TARGET: { t: 'ต่ำกว่าเป้า', g: '▼', c: 'risk' },
+    NOT_DUE: { t: 'ยังไม่ถึงกำหนด', g: '○', c: 'na' }
+  };
+  const STATUS_ORDER = ['DONE', 'ON_TRACK', 'LATE', 'BELOW_TARGET', 'NOT_DUE'];
+  const WSTATE = {
+    '': { t: 'ยังไม่เริ่มรายงาน', g: '○', c: 'na' },
+    DRAFT: { t: 'ร่าง', g: '✎', c: 'na' },
+    SUBMITTED: { t: 'รอหัวหน้ากลุ่มงานตรวจ', g: '◷', c: 'info' },
+    REVIEWED: { t: 'รอผู้อำนวยการอนุมัติ', g: '◷', c: 'info' },
+    APPROVED: { t: 'อนุมัติแล้ว', g: '✓', c: 'done' },
+    RETURNED: { t: 'ส่งกลับแก้ไข', g: '↩', c: 'risk' }
+  };
+  const ROLE_TH = { STAFF: 'ผู้รับผิดชอบ', GROUP_HEAD: 'หัวหน้ากลุ่มงาน', DIRECTOR: 'ผู้อำนวยการฝ่าย', EXEC_VIEWER: 'ผู้บริหาร', ADMIN: 'ผู้ดูแลระบบ' };
+  const ICONS = {
+    dashboard: 'M3 3h7v9H3z|M14 3h7v5h-7z|M14 12h7v9h-7z|M3 16h7v5H3z',
+    list: 'm3 17 2 2 4-4|m3 7 2 2 4-4|M13 6h8|M13 12h8|M13 18h8',
+    file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z|M14 2v6h6|M9 15h6|M9 11h2',
+    filePlus: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z|M14 2v6h6|M12 18v-6|M9 15h6',
+    tasks: 'M9 2h6v4H9z|M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2|m9 14 2 2 4-4',
+    inbox: 'M22 12h-6l-2 3h-4l-2-3H2|M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z',
+    book: 'M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z|M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z',
+    download: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4|m7 10 5 5 5-5|M12 15V3',
+    upload: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4|m17 8-5-5-5 5|M12 3v12',
+    alert: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z|M12 8v4|M12 16h.01',
+    check: 'M20 6 9 17l-5-5',
+    x: 'M18 6 6 18|M6 6l12 12',
+    chevron: 'm9 18 6-6-6-6',
+    search: 'M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16z|m21 21-4.3-4.3',
+    calendar: 'M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z|M16 2v4|M8 2v4|M3 10h18',
+    link: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71|M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71',
+    send: 'm22 2-7 20-4-9-9-4z|M22 2 11 13',
+    undo: 'M9 14 4 9l5-5|M4 9h11a5 5 0 0 1 0 10h-3',
+    bell: 'M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9|M10.3 21a1.94 1.94 0 0 0 3.4 0',
+    refresh: 'M3 12a9 9 0 0 1 15-6.7L21 8|M21 3v5h-5|M21 12a9 9 0 0 1-15 6.7L3 16|M3 21v-5h5',
+    save: 'M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z|M17 21v-8H7v8|M7 3v5h8'
+  };
+
+  // ---------- DOM helpers ----------
+  function append(el, kids) {
+    kids.flat(Infinity).forEach(function (c) {
+      if (c == null || c === false) return;
+      el.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+    });
+    return el;
+  }
+  function h(tag, props) {
+    const el = document.createElement(tag);
+    const kids = Array.prototype.slice.call(arguments, 2);
+    if (props) Object.keys(props).forEach(function (k) {
+      const v = props[k];
+      if (v == null || v === false) return;
+      if (k === 'class') el.className = v;
+      else if (k === 'ref') v(el);
+      else if (k.indexOf('on') === 0 && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k === 'value') el.value = v;
+      else if (k === 'checked' || k === 'disabled' || k === 'selected' || k === 'readOnly' || k === 'open') el[k] = !!v;
+      else el.setAttribute(k, v === true ? '' : String(v));
+    });
+    return append(el, kids);
+  }
+  // replaceChildren ที่ flatten array และข้าม null/false
+  function fill(el) {
+    el.replaceChildren();
+    return append(el, Array.prototype.slice.call(arguments, 1));
+  }
+  function icon(name, cls) {
+    const s = document.createElementNS(NS, 'svg');
+    s.setAttribute('viewBox', '0 0 24 24');
+    s.setAttribute('class', 'icon' + (cls ? ' ' + cls : ''));
+    s.setAttribute('aria-hidden', 'true');
+    String(ICONS[name] || '').split('|').forEach(function (d) {
+      const p = document.createElementNS(NS, 'path');
+      p.setAttribute('d', d);
+      s.appendChild(p);
+    });
+    return s;
+  }
+
+  // ---------- formatting ----------
+  const DF = new Intl.DateTimeFormat('th-TH-u-ca-buddhist', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Bangkok' });
+  const TF = new Intl.DateTimeFormat('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok' });
+  function toDate(s) { return new Date(String(s).length === 10 ? s + 'T00:00:00+07:00' : s); }
+  function fmtDate(s) { if (!s) return '–'; const d = toDate(s); return isNaN(d) ? '–' : DF.format(d); }
+  function fmtDateTime(s) { if (!s) return '–'; const d = toDate(s); return isNaN(d) ? '–' : DF.format(d) + ' · ' + TF.format(d) + ' น.'; }
+  function fmtTime(s) { return TF.format(s ? toDate(s) : new Date()) + ' น.'; }
+  function fmtNum(n) { return n == null || n === '' ? '–' : Number(n).toLocaleString('th-TH', { maximumFractionDigits: 2 }); }
+  function periodLabel(fy, p) { return MONTHS[p - 1] + ' ' + (fy - (p <= 3 ? 1 : 0)); }
+  function pct(x) { return Math.round((x || 0) * 100); }
+
+  // ---------- components ----------
+  function chip(status) {
+    const m = STATUS[status] || STATUS.NOT_DUE;
+    return h('span', { class: 'chip st-' + m.c }, h('span', { 'aria-hidden': 'true' }, m.g), ' ' + m.t);
+  }
+  function wchip(state) {
+    const m = WSTATE[state || ''] || WSTATE[''];
+    return h('span', { class: 'chip st-' + m.c }, h('span', { 'aria-hidden': 'true' }, m.g), ' ' + m.t);
+  }
+  function progress(ratio, label, cls) {
+    const v = pct(ratio);
+    return h('div', { class: 'pbar ' + (cls || ''), role: 'progressbar', 'aria-label': label, 'aria-valuenow': v, 'aria-valuemin': 0, 'aria-valuemax': 100 },
+      h('span', { style: 'width:' + v + '%' }));
+  }
+  function href(page, params) {
+    const q = new URLSearchParams(Object.assign({ page: page }, params || {}));
+    return '?' + q.toString();
+  }
+  function link(page, params, attrs) {
+    const kids = Array.prototype.slice.call(arguments, 3);
+    const a = h('a', Object.assign({ href: href(page, params) }, attrs || {}), kids);
+    a.addEventListener('click', function (e) {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+      e.preventDefault();
+      go(page, params || {});
+    });
+    return a;
+  }
+  function pageHeader(o) {
+    return h('header', { class: 'ph' },
+      h('div', { style: 'min-width:0' },
+        o.eyebrow ? h('div', { class: 'eyebrow' }, o.eyebrow) : null,
+        h('h1', { id: 'page-title', tabindex: '-1' }, o.title),
+        o.sub ? h('div', { class: 'sub' }, o.sub) : null),
+      o.actions ? h('div', { class: 'actions' }, o.actions) : null);
+  }
+  function banner(kind, title, body, actions) {
+    return h('div', { class: 'banner ' + kind, role: kind === 'error' ? 'alert' : null },
+      icon(kind === 'ok' ? 'check' : 'alert'),
+      h('div', { class: 'grow' }, title ? h('strong', { style: 'display:block' }, title) : null, body || null),
+      actions || null);
+  }
+  function emptyState(title, text, action) {
+    return h('section', { class: 'glass empty' }, icon('search'), h('h2', { style: 'font-size:18px' }, title),
+      text ? h('p', { class: 'muted', style: 'margin:0;font-size:14px' }, text) : null, action || null);
+  }
+  function skeleton() {
+    return h('div', { 'aria-hidden': 'true', style: 'display:flex;flex-direction:column;gap:16px' },
+      h('div', { class: 'skel', style: 'height:72px' }),
+      h('div', { class: 'kpis' }, [1, 2, 3, 4].map(function () { return h('div', { class: 'skel', style: 'height:130px' }); })),
+      h('div', { class: 'skel', style: 'height:260px' }));
+  }
+  let toastTimer = null;
+  function toast(msg, kind) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show' + (kind === 'error' ? ' error' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = 'toast'; }, 4000);
+  }
+  function errorView(main, err) {
+    fill(main, banner('error', err.code === 'FORBIDDEN' ? 'ไม่มีสิทธิ์เข้าถึง' : 'โหลดข้อมูลไม่สำเร็จ', err.message || String(err),
+      h('button', { class: 'btn btn-g', type: 'button', onclick: function () { renderPage(); } }, icon('refresh'), 'ลองใหม่')));
+    main.setAttribute('aria-busy', 'false');
+  }
+
+  // ---------- API ----------
+  function parseErr(e) {
+    const m = String((e && e.message) || e);
+    const i = m.indexOf('{');
+    if (i >= 0) { try { return JSON.parse(m.slice(i)); } catch (_) { /* ไม่ใช่ JSON */ } }
+    return { code: 'ERROR', message: m };
+  }
+  function api(name) {
+    const args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      if (HAS_GAS) {
+        const r = google.script.run.withSuccessHandler(resolve).withFailureHandler(function (e) { reject(parseErr(e)); });
+        r[name].apply(r, args);
+      } else if (window.DEV_API) {
+        window.DEV_API(name).apply(null, args).then(resolve, function (e) { reject(parseErr(e)); });
+      } else {
+        reject({ code: 'NO_BACKEND', message: 'ไม่พบ backend (เปิดผ่าน Web App หรือ npm run preview)' });
+      }
+    });
+  }
+
+  // ---------- shell & routing ----------
+  const App = { user: null, fy: null, fiscalYears: [], inboxCount: 0, route: { page: 'dashboard', params: {} }, navId: 0, cleanup: null, filters: null };
+  const NAV = [
+    ['dashboard', 'ภาพรวม', 'dashboard'],
+    ['activities', 'แผนและกิจกรรม', 'list'],
+    ['mytasks', 'งานของฉัน', 'tasks'],
+    ['inbox', 'รออนุมัติ', 'inbox', ['GROUP_HEAD', 'DIRECTOR', 'ADMIN']],
+    ['guidelines', "แนวทาง Do & Don't", 'book']
+  ];
+  const BNAV = [['dashboard', 'ภาพรวม', 'dashboard'], ['mytasks', 'งานของฉัน', 'tasks'], ['activities', 'กิจกรรม', 'list'], ['guidelines', "Do & Don't", 'book']];
+  const NAV_OF = { report: 'activities' };
+
+  function renderShell() {
+    const u = App.user;
+    const active = NAV_OF[App.route.page] || App.route.page;
+    const items = NAV.filter(function (n) { return !n[3] || n[3].indexOf(u.role) >= 0; });
+    fill(document.getElementById('side'), 
+      h('div', { class: 'brand' }, h('div', { class: 'brand-mark', 'aria-hidden': 'true' }, 'กยท.'),
+        h('div', { style: 'line-height:1.35' }, h('div', { style: 'font-weight:700;font-size:16px' }, 'Risk Culture'),
+          h('div', { style: 'font-size:12px', class: 'muted' }, 'ระบบติดตามแผน ปี ' + App.fy))),
+      h('nav', { 'aria-label': 'หน้าหลัก' }, h('ul', { class: 'nav' }, items.map(function (n) {
+        return h('li', null, link(n[0], {}, { 'aria-current': active === n[0] ? 'page' : null }, icon(n[2]), n[1],
+          n[0] === 'inbox' && App.inboxCount ? h('span', { class: 'badge num', 'aria-label': App.inboxCount + ' รายการ' }, App.inboxCount) : null));
+      }))),
+      h('div', { class: 'usercard' }, h('div', { class: 'avatar', 'aria-hidden': 'true' }, (u.display_name || '?').charAt(0).toUpperCase()),
+        h('div', { style: 'line-height:1.4;min-width:0' }, h('div', { style: 'font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis' }, u.display_name),
+          h('div', { style: 'font-size:12px', class: 'muted' }, (ROLE_TH[u.role] || u.role) + (u.unit ? ' · ' + u.unit : '')))));
+    fill(document.getElementById('bnav'), BNAV.map(function (n) {
+      return link(n[0], {}, { 'aria-current': active === n[0] ? 'page' : null }, h('span', { class: 'pill' }, icon(n[2])), n[1]);
+    }));
+  }
+
+  function go(page, params, push) {
+    App.route = { page: page, params: params || {} };
+    if (push !== false) {
+      const state = Object.assign({ page: page }, params || {});
+      if (HAS_GAS) google.script.history.push(state, state);
+      else history.pushState(state, '', href(page, params));
+    }
+    renderPage(true);
+  }
+
+  function renderPage(focus) {
+    if (App.cleanup) { try { App.cleanup(); } catch (_) { /* ignore */ } App.cleanup = null; }
+    const id = ++App.navId;
+    const main = document.getElementById('main');
+    renderShell();
+    main.setAttribute('aria-busy', 'true');
+    fill(main, skeleton());
+    const view = window.Views[App.route.page] || window.Views.dashboard;
+    const ctx = { alive: function () { return id === App.navId; }, onCleanup: function (fn) { App.cleanup = fn; } };
+    Promise.resolve().then(function () { return view(main, App.route.params, ctx); }).then(function () {
+      if (!ctx.alive()) return;
+      main.setAttribute('aria-busy', 'false');
+      const t = document.getElementById('page-title');
+      document.title = (t ? t.textContent + ' · ' : '') + 'Risk Culture Tracker';
+      if (focus && t) t.focus({ preventScroll: false });
+      if (focus) window.scrollTo(0, 0);
+    }).catch(function (err) { if (ctx.alive()) errorView(main, err); });
+  }
+
+  function readLocation(cb) {
+    if (HAS_GAS) google.script.url.getLocation(function (l) { cb(l.parameter || {}); });
+    else cb(Object.fromEntries(new URLSearchParams(location.search)));
+  }
+  function routeFrom(q) {
+    const params = Object.assign({}, q);
+    const page = params.page || 'dashboard';
+    delete params.page;
+    return { page: page, params: params };
+  }
+
+  function boot() {
+    return api('apiBootstrap').then(function (b) {
+      App.user = b.user; App.fy = b.fy; App.fiscalYears = b.fiscalYears; App.inboxCount = b.inboxCount; App.today = b.today;
+      renderPage(false);
+    }).catch(function (err) {
+      const main = document.getElementById('main');
+      fill(main, h('div', { class: 'glass empty' }, icon('alert'), h('h1', { id: 'page-title', style: 'font-size:22px' }, err.code === 'FORBIDDEN' ? 'ยังไม่ได้รับสิทธิ์ใช้งาน' : 'เข้าสู่ระบบไม่สำเร็จ'),
+        h('p', { class: 'muted', style: 'margin:0' }, err.message)));
+      main.setAttribute('aria-busy', 'false');
+    });
+  }
+
+  App.start = function () {
+    readLocation(function (q) { App.route = routeFrom(q); boot(); });
+    if (HAS_GAS) google.script.history.setChangeHandler(function (e) { App.route = routeFrom(e.state || {}); renderPage(true); });
+    else window.addEventListener('popstate', function (e) { App.route = routeFrom(e.state || Object.fromEntries(new URLSearchParams(location.search))); renderPage(true); });
+  };
+  App.reload = boot;
+  App.refreshInbox = function () { return api('apiBootstrap').then(function (b) { App.inboxCount = b.inboxCount; renderShell(); }); };
+
+  window.App = App;
+  window.Views = window.Views || {};
+  window.UI = {
+    h: h, fill: fill, icon: icon, api: api, go: go, link: link, href: href, toast: toast, banner: banner, emptyState: emptyState,
+    pageHeader: pageHeader, chip: chip, wchip: wchip, progress: progress, fmtDate: fmtDate, fmtDateTime: fmtDateTime,
+    fmtTime: fmtTime, fmtNum: fmtNum, periodLabel: periodLabel, pct: pct, MONTHS: MONTHS, STATUS: STATUS,
+    STATUS_ORDER: STATUS_ORDER, WSTATE: WSTATE, ROLE_TH: ROLE_TH, App: App
+  };
+})();
+</script>

@@ -1,0 +1,44 @@
+<script>
+/* 7.5 แนวทาง Do & Don't — จากแท็บ "แนวทางการปฏิบัติตน" (4 บทบาท × 6 ค่านิยม) */
+(function () {
+  const U = window.UI, h = U.h;
+
+  window.Views.guidelines = async function (main, params, ctx) {
+    const d = await U.api('apiGetGuidelines');
+    if (!ctx.alive()) return;
+    if (!d.roles.length) {
+      U.fill(main, U.pageHeader({ title: "แนวทาง Do & Don't" }), U.emptyState('ไม่พบข้อมูลแนวทางการปฏิบัติตน', 'ตรวจสอบแท็บ "แนวทางการปฏิบัติตน" ใน Google Sheet'));
+      return;
+    }
+    let role = Math.min(Number(params.role) || 0, d.roles.length - 1);
+    const grid = h('div', { class: 'ggrid', role: 'tabpanel', id: 'gp' });
+    const tabs = d.roles.map(function (name, i) {
+      return h('button', { type: 'button', role: 'tab', id: 'gt-' + i, 'aria-controls': 'gp', onclick: function () { role = i; draw(); },
+        onkeydown: function (e) {
+          const n = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+          if (!n) return;
+          role = (role + n + d.roles.length) % d.roles.length;
+          draw();
+          document.getElementById('gt-' + role).focus();
+        } }, name);
+    });
+    function draw() {
+      tabs.forEach(function (b, i) { b.setAttribute('aria-selected', i === role ? 'true' : 'false'); b.tabIndex = i === role ? 0 : -1; });
+      grid.setAttribute('aria-labelledby', 'gt-' + role);
+      U.fill(grid, d.groups.map(function (g) {
+        const c = g.cells[role] || { 'do': [], dont: [] };
+        return h('section', { class: 'glass', style: 'padding:18px;display:flex;flex-direction:column;gap:12px' },
+          h('div', { style: 'display:flex;align-items:center;gap:12px' }, h('div', { class: 'vletter', 'aria-hidden': 'true' }, g.value_code || g.group_no),
+            h('div', { style: 'line-height:1.35' }, h('h2', { style: 'font-size:16px' }, g.value_name), h('div', { class: 'muted', style: 'font-size:13px' }, g.dimension))),
+          h('div', null, h('span', { class: 'chip st-done' }, '✓ พึงกระทำ (Do)'), h('ul', null, c['do'].map(function (t) { return h('li', null, t); }))),
+          h('div', null, h('span', { class: 'chip st-risk' }, "✕ ไม่พึงกระทำ (Don't)"), h('ul', null, c.dont.map(function (t) { return h('li', null, t); }))));
+      }));
+    }
+    U.fill(main, 
+      U.pageHeader({ eyebrow: 'แนวทางการปฏิบัติตนของบุคลากร กยท.', title: "แนวทาง Do & Don't", sub: 'เลือกบทบาทเพื่อดูพฤติกรรมที่พึงกระทำและไม่พึงกระทำตามค่านิยม RUBBER' }),
+      h('div', { role: 'tablist', 'aria-label': 'บทบาท', class: 'glass seg', style: 'flex-wrap:wrap' }, tabs),
+      grid);
+    draw();
+  };
+})();
+</script>

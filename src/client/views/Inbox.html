@@ -1,0 +1,25 @@
+<script>
+/* 7.5 รออนุมัติ — inbox ของ GROUP_HEAD (SUBMITTED) / DIRECTOR (REVIEWED) / ADMIN (ทั้งสอง) */
+(function () {
+  const U = window.UI, h = U.h, icon = U.icon;
+
+  window.Views.inbox = async function (main, params, ctx) {
+    const d = await U.api('apiGetInbox');
+    if (!ctx.alive()) return;
+    const what = d.role === 'GROUP_HEAD' ? 'รายงานที่รอหัวหน้ากลุ่มงานตรวจ' : d.role === 'DIRECTOR' ? 'รายงานที่ผ่านการตรวจ รอผู้อำนวยการอนุมัติ' : 'รายงานที่รอตรวจและรออนุมัติทั้งหมด';
+    U.fill(main, 
+      U.pageHeader({ eyebrow: U.ROLE_TH[d.role], title: 'รออนุมัติ', sub: what + ' · เรียงตามเวลาส่ง (เก่าสุดก่อน)' }),
+      d.items.length ? h('ul', { class: 'tasks', style: 'grid-template-columns:repeat(auto-fill,minmax(340px,1fr))' }, d.items.map(function (x) {
+        return h('li', { class: 'glass task' },
+          h('div', { style: 'display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center' },
+            h('span', { style: 'font-size:13px;font-weight:700;color:var(--brand-700)' }, h('span', { class: 'num' }, x.no), ' · ' + x.value_name + ' · รอบ ' + U.periodLabel(x.fiscal_year, x.period_index)),
+            U.wchip(x.workflow_state)),
+          h('div', { style: 'font-weight:600;line-height:1.5' }, x.name),
+          h('div', { class: 'muted', style: 'font-size:13px;overflow-wrap:anywhere' },
+            'ผล ' + U.fmtNum(x.actual_value) + ' / ' + U.fmtNum(x.target_value) + ' ' + x.unit + ' · ส่งโดย ' + x.reporter_email + ' · ' + U.fmtDateTime(x.submitted_at)),
+          x.progress_status === 'DELAYED' ? h('span', { class: 'chip st-late', style: 'align-self:flex-start' }, h('span', { 'aria-hidden': 'true' }, '!'), ' รายงานว่าล่าช้า') : null,
+          U.link('report', { id: x.activity_id, period: x.period_index }, { class: 'btn btn-p cta' }, icon('file'), x.workflow_state === 'SUBMITTED' ? 'ตรวจรายงาน' : 'พิจารณาอนุมัติ'));
+      })) : U.emptyState('ไม่มีรายงานที่รอดำเนินการ', 'เมื่อมีผู้ส่งรายงาน รายการจะปรากฏที่นี่'));
+  };
+})();
+</script>

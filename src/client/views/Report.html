@@ -1,0 +1,428 @@
+<script>
+/* 7.3 รายละเอียดกิจกรรม + รายงานผล + ตรวจ/อนุมัติ */
+(function () {
+  const U = window.UI, h = U.h, icon = U.icon;
+  const FIELDS = [['actual_value', 'ผลการดำเนินงาน'], ['progress_status', 'สถานะการดำเนินงาน'], ['summary', 'สรุปผลการดำเนินงาน'],
+    ['issues', 'ปัญหา / อุปสรรค'], ['eta_date', 'วันที่คาดว่าจะแล้วเสร็จ']];
+  const PS = [['ON_PLAN', '●', 'ตามแผน', 'ดำเนินการได้ตามกำหนด'], ['DELAYED', '!', 'ล่าช้า', 'ต้องระบุปัญหาและวันคาดเสร็จ'], ['NOT_STARTED', '○', 'ยังไม่เริ่ม', 'ต้องระบุปัญหา/อุปสรรค']];
+  const PS_TH = { ON_PLAN: 'ตามแผน', DELAYED: 'ล่าช้า', NOT_STARTED: 'ยังไม่เริ่ม' };
+  const MIME = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png' };
+
+  function store(fn) { try { return fn(); } catch (_) { return null; } }
+  function sizeLabel(b) { return b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'; }
+  function readB64(file) {
+    return new Promise(function (res, rej) {
+      const fr = new FileReader();
+      fr.onload = function () { res(String(fr.result).split(',')[1] || ''); };
+      fr.onerror = function () { rej({ message: 'อ่านไฟล์ไม่สำเร็จ' }); };
+      fr.readAsDataURL(file);
+    });
+  }
+
+  window.Views.report = async function (main, params, ctx) {
+    if (!params.id) {
+      U.fill(main, U.pageHeader({ title: 'รายงานผล' }),
+        U.emptyState('เลือกกิจกรรมที่ต้องการรายงาน', 'ไปที่ "งานของฉัน" เพื่อดูรอบที่ต้องส่ง หรือเลือกจาก "แผนและกิจกรรม"',
+          U.link('mytasks', {}, { class: 'btn btn-p' }, 'ไปที่งานของฉัน')));
+      return;
+    }
+    const d = await U.api('apiGetReportPage', params.id, Number(params.period) || null);
+    if (!ctx.alive()) return;
+    render(main, d, ctx);
+  };
+
+  function render(main, d, ctx) {
+    const a = d.activity, fy = a.fiscal_year, p = d.period.index, rid = d.period.report_id, perms = d.perms;
+    const r = d.report || {};
+    const ro = !perms.edit;
+    const BK = 'rct:draft:' + rid;
+    const m = {
+      version: r.version || 0, exists: !!d.report, state: r.workflow_state || '', dirty: false, attempted: false, touched: {}, serverErr: {},
+      f: {
+        actual_value: r.actual_value == null ? '' : String(r.actual_value), progress_status: r.progress_status || '',
+        summary: r.summary || '', issues: r.issues || '', fix_plan: r.fix_plan || '', eta_date: r.eta_date || ''
+      }
+    };
+    let saving = null;
+    const refs = {};
+
+    // ---------- validation (mirror ของ server/Validation.gs) ----------
+    function validate() {
+      const e = {}, f = m.f;
+      const n = f.actual_value === '' ? null : Number(f.actual_value);
+      if (f.actual_value !== '' && !isFinite(n)) e.actual_value = 'ผลต้องเป็นตัวเลข';
+      else if (n != null && n < 0) e.actual_value = 'ผลต้องไม่ติดลบ';
+      else if (n != null && a.measure_type === 'PERCENT_LATEST' && n > 100) e.actual_value = 'ค่าร้อยละต้องไม่เกิน 100';
+      else if (n != null && a.measure_type === 'COUNT_CUMULATIVE' && d.prevValue != null && n < d.prevValue) e.actual_value = 'ยอดสะสมต้องไม่น้อยกว่ารอบก่อนที่อนุมัติแล้ว (' + d.prevValue + ')';
+      if (!f.progress_status) e.progress_status = 'กรุณาเลือกสถานะการดำเนินงาน';
+      if (!e.actual_value && f.actual_value === '' && f.progress_status !== 'NOT_STARTED') e.actual_value = 'กรุณากรอกผลการดำเนินงาน';
+      if (!f.summary.trim()) e.summary = 'กรุณาสรุปผลการดำเนินงาน';
+      else if (f.summary.length > 1000) e.summary = 'ความยาวต้องไม่เกิน 1,000 ตัวอักษร';
+      if ((f.progress_status === 'DELAYED' || f.progress_status === 'NOT_STARTED') && !f.issues.trim()) e.issues = 'กรุณาระบุปัญหา/อุปสรรค';
+      if (f.progress_status === 'DELAYED' && !f.eta_date) e.eta_date = 'กรุณาระบุวันที่คาดว่าจะแล้วเสร็จ';
+      return Object.assign(e, m.serverErr);
+    }
+
+    function payload() { return { activity_id: a.activity_id, period_index: p, version: m.version, fields: Object.assign({}, m.f) }; }
+    function backup() { store(function () { localStorage.setItem(BK, JSON.stringify({ version: m.version, f: m.f })); }); }
+    function clearBackup() { store(function () { localStorage.removeItem(BK); }); }
+
+    function onField(k, v) {
+      m.f[k] = v;
+      m.dirty = true;
+      delete m.serverErr[k];
+      backup();
+      refresh();
+    }
+    function onBlur(k) { m.touched[k] = true; refresh(); }
+
+    // ---------- inputs ----------
+    const actual = h('input', { class: 'inp num', id: 'f-actual_value', type: 'number', inputmode: 'decimal', step: 'any', min: '0', value: m.f.actual_value,
+      readOnly: ro, 'aria-describedby': 'h-actual_value e-actual_value', oninput: function (e) { onField('actual_value', e.target.value); }, onblur: function () { onBlur('actual_value'); } });
+    const radios = PS.map(function (o) {
+      const inp = h('input', { type: 'radio', name: 'ps', value: o[0], checked: m.f.progress_status === o[0], disabled: ro,
+        onchange: function () { onField('progress_status', o[0]); m.touched.progress_status = true; refresh(); } });
+      const card = h('label', { class: 'rc' }, inp, h('span', { style: 'line-height:1.45' },
+        h('span', { style: 'display:block;font-weight:600' }, h('span', { 'aria-hidden': 'true' }, o[1]), ' ' + o[2]),
+        h('span', { class: 'muted', style: 'display:block;font-size:13px' }, o[3])));
+      return { inp: inp, card: card };
+    });
+    const textarea = function (k, rows, extra) {
+      return h('textarea', Object.assign({ class: 'inp', id: 'f-' + k, rows: rows, readOnly: ro, 'aria-describedby': 'h-' + k + ' e-' + k,
+        oninput: function (e) { onField(k, e.target.value); }, onblur: function () { onBlur(k); } }, extra || {}), m.f[k]);
+    };
+    const summary = textarea('summary', 4, { maxlength: 1000 });
+    const issues = textarea('issues', 3, { placeholder: 'ระบุสาเหตุที่ทำให้ล่าช้าหรือยังไม่เริ่ม' });
+    const fix = textarea('fix_plan', 3, { maxlength: 2000 });
+    const etaHint = h('div', { class: 'hint', id: 'h-eta_date' });
+    const eta = h('input', { class: 'inp', id: 'f-eta_date', type: 'date', value: m.f.eta_date, min: d.today, readOnly: ro, 'aria-describedby': 'h-eta_date e-eta_date',
+      oninput: function (e) { onField('eta_date', e.target.value); }, onblur: function () { onBlur('eta_date'); } });
+    const counter = h('div', { class: 'hint num', id: 'h-summary', style: 'text-align:right' });
+    const issuesReq = h('span', { class: 'req', 'aria-hidden': 'true' }, ' *');
+    const etaBox = h('div');
+    const errEl = function (k) { return h('div', { class: 'err', id: 'e-' + k, hidden: true }); };
+    refs.actual_value = { inputs: [actual], err: errEl('actual_value') };
+    refs.progress_status = { inputs: radios.map(function (x) { return x.inp; }), err: errEl('progress_status') };
+    refs.summary = { inputs: [summary], err: errEl('summary') };
+    refs.issues = { inputs: [issues], err: errEl('issues') };
+    refs.eta_date = { inputs: [eta], err: errEl('eta_date') };
+
+    function syncInputs() {
+      actual.value = m.f.actual_value; summary.value = m.f.summary; issues.value = m.f.issues; fix.value = m.f.fix_plan; eta.value = m.f.eta_date;
+      radios.forEach(function (x) { x.inp.checked = x.inp.value === m.f.progress_status; });
+    }
+
+    // ---------- summary, buttons, status ----------
+    const errSummary = h('div', { class: 'banner error', tabindex: '-1', role: 'alert', hidden: true });
+    const saveStatus = h('span', { 'aria-live': 'polite', style: 'display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ok-fg)' });
+    const conflictSlot = h('div', { style: 'display:contents' });
+    const setSave = function (t) { U.fill(saveStatus, icon('check'), t); };
+    const submitBtn = h('button', { type: 'button', class: 'btn btn-p', onclick: onSubmit }, icon('send'), 'ส่งให้หัวหน้ากลุ่มงานตรวจ');
+    const draftBtn = h('button', { type: 'button', class: 'btn btn-g', onclick: function () { saveDraft(false).catch(function () { }); } }, icon('save'), 'บันทึกร่าง');
+
+    function refresh() {
+      const e = validate();
+      const keys = FIELDS.map(function (x) { return x[0]; }).filter(function (k) { return e[k]; });
+      FIELDS.forEach(function (x) {
+        const k = x[0], ref = refs[k];
+        const msg = (m.attempted || m.touched[k]) && e[k];
+        ref.err.hidden = !msg;
+        U.fill(ref.err, msg ? [icon('alert'), msg] : []);
+        ref.inputs.forEach(function (i) { i.setAttribute('aria-invalid', msg ? 'true' : 'false'); });
+      });
+      radios.forEach(function (x) {
+        x.card.classList.toggle('on', x.inp.checked);
+        x.card.classList.toggle('invalid', !!((m.attempted || m.touched.progress_status) && e.progress_status));
+      });
+      issuesReq.hidden = !(m.f.progress_status === 'DELAYED' || m.f.progress_status === 'NOT_STARTED');
+      etaBox.hidden = m.f.progress_status !== 'DELAYED';
+      etaHint.textContent = m.f.eta_date ? 'ตรงกับ ' + U.fmtDate(m.f.eta_date) + ' (พ.ศ.)' : 'แสดงผลเป็น พ.ศ. หลังเลือกวันที่';
+      counter.textContent = m.f.summary.length.toLocaleString('th-TH') + ' / 1,000 ตัวอักษร';
+      submitBtn.setAttribute('aria-disabled', keys.length ? 'true' : 'false');
+      if (m.attempted && keys.length) {
+        errSummary.hidden = false;
+        U.fill(errSummary, icon('alert'), h('div', { class: 'grow' },
+          h('strong', { style: 'display:block' }, 'กรอกข้อมูลไม่ครบ ' + keys.length + ' รายการ'),
+          h('ul', { style: 'margin:6px 0 0;padding-left:20px' }, keys.map(function (k) {
+            const target = k === 'progress_status' ? radios[0].inp : refs[k].inputs[0];
+            return h('li', null, h('a', { href: '#f-' + k, style: 'color:var(--error);font-weight:600', onclick: function (ev) { ev.preventDefault(); target.focus(); } }, e[k]));
+          }))));
+      } else {
+        errSummary.hidden = true;
+      }
+    }
+
+    function handleErr(err) {
+      if (err.code === 'VALIDATION' && err.fields) {
+        m.serverErr = {};
+        err.fields.forEach(function (x) { m.serverErr[x.field] = x.message; });
+        m.attempted = true;
+        refresh();
+        errSummary.focus();
+      } else if (err.code === 'CONFLICT') {
+        U.fill(conflictSlot, U.banner('warn', 'มีผู้แก้ไขรายงานนี้ก่อนหน้า', 'ข้อมูลที่คุณกรอกยังถูกเก็บไว้ในเครื่องนี้ — โหลดข้อมูลล่าสุดแล้วกู้คืนร่างได้',
+          h('button', { class: 'btn btn-g', type: 'button', onclick: function () { U.go('report', { id: a.activity_id, period: p }, false); } }, icon('refresh'), 'โหลดล่าสุด')));
+        conflictSlot.scrollIntoView({ block: 'center' });
+      } else {
+        U.toast(err.message || 'เกิดข้อผิดพลาด', 'error');
+      }
+    }
+
+    function saveDraft(silent) {
+      if (saving) return saving;
+      setSave('กำลังบันทึก…');
+      draftBtn.setAttribute('aria-busy', 'true');
+      saving = U.api('apiSaveDraft', payload()).then(function (res) {
+        m.version = res.version; m.exists = true; m.state = res.workflow_state; m.dirty = false;
+        clearBackup();
+        setSave((silent ? 'บันทึกร่างอัตโนมัติแล้ว · ' : 'บันทึกร่างแล้ว · ') + U.fmtTime(res.updated_at));
+        if (!silent) U.toast('บันทึกร่างแล้ว');
+        return res;
+      }).catch(function (err) {
+        setSave('บันทึกไม่สำเร็จ');
+        handleErr(err);
+        throw err;
+      }).finally(function () { saving = null; draftBtn.removeAttribute('aria-busy'); });
+      return saving;
+    }
+
+    function onSubmit() {
+      m.attempted = true;
+      const e = validate();
+      refresh();
+      if (Object.keys(e).length) { errSummary.focus(); return; }
+      submitBtn.setAttribute('aria-busy', 'true');
+      U.api('apiSubmit', payload()).then(function () {
+        clearBackup();
+        U.toast('ส่งรายงานให้หัวหน้ากลุ่มงานตรวจแล้ว');
+        U.go('report', { id: a.activity_id, period: p }, false);
+      }).catch(handleErr).finally(function () { submitBtn.removeAttribute('aria-busy'); });
+    }
+
+    // ---------- evidence ----------
+    const evList = h('ul', { class: 'files', 'aria-label': 'รายการหลักฐาน' });
+    function evRow(e) {
+      return h('li', null,
+        e.kind === 'LINK' ? h('span', { class: 'ftype', style: 'background:var(--info-bg);color:var(--info-fg)', 'aria-hidden': 'true' }, icon('link'))
+          : h('span', { class: 'ftype', 'aria-hidden': 'true' }, (e.name.split('.').pop() || '').toUpperCase().slice(0, 4)),
+        h('span', { style: 'flex:1;min-width:0' },
+          h('a', { href: e.url, target: '_blank', rel: 'noopener', style: 'display:block;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, e.name),
+          h('span', { style: 'display:block;font-size:13px;color:var(--ok-fg)' }, '✓ ' + (e.kind === 'LINK' ? 'แนบลิงก์แล้ว' : 'อัปโหลดแล้ว · ' + sizeLabel(e.size_bytes)) + ' · ' + U.fmtDate(e.uploaded_at))),
+        perms.edit ? h('button', {
+          type: 'button', class: 'iconbtn', 'aria-label': 'ลบหลักฐาน ' + e.name, onclick: function (ev) {
+            const li = ev.currentTarget.closest('li');
+            U.api('apiDeleteEvidence', e.evidence_id).then(function () { li.remove(); U.toast('ลบหลักฐานแล้ว'); }).catch(handleErr);
+          }
+        }, icon('x')) : null);
+    }
+    function pendingRow(name) {
+      return h('li', null, h('span', { class: 'ftype', 'aria-hidden': 'true' }, icon('upload')),
+        h('span', { style: 'flex:1;min-width:0' }, h('span', { style: 'display:block;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name),
+          h('span', { class: 'muted', style: 'display:block;font-size:13px' }, 'กำลังอัปโหลด…')));
+    }
+    function failRow(li, name, msg) {
+      U.fill(li, h('span', { class: 'ftype', style: 'background:var(--error-bg);color:var(--error)', 'aria-hidden': 'true' }, icon('alert')),
+        h('span', { style: 'flex:1;min-width:0' }, h('span', { style: 'display:block;font-size:14px;font-weight:600' }, name),
+          h('span', { role: 'alert', style: 'display:block;font-size:13px;color:var(--error);font-weight:600' }, 'อัปโหลดไม่สำเร็จ: ' + msg)),
+        h('button', { type: 'button', class: 'iconbtn', 'aria-label': 'ซ่อนรายการ ' + name, onclick: function () { li.remove(); } }, icon('x')));
+    }
+    function ensureSaved() { return (!m.exists || m.dirty) ? saveDraft(true) : Promise.resolve(); }
+    function uploadFiles(list) {
+      Array.prototype.forEach.call(list, function (file) {
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        const li = pendingRow(file.name);
+        evList.appendChild(li);
+        if (d.limits.allowedExt.indexOf(ext) < 0) return failRow(li, file.name, 'ไม่รองรับไฟล์ .' + ext);
+        if (file.size > d.limits.maxFileMb * 1048576) return failRow(li, file.name, 'ไฟล์ใหญ่เกิน ' + d.limits.maxFileMb + ' MB');
+        ensureSaved().then(function () { return readB64(file); }).then(function (b64) {
+          return U.api('apiUploadEvidence', rid, { name: file.name, mimeType: file.type || MIME[ext] || '', base64: b64 });
+        }).then(function (ev) { li.replaceWith(evRow(ev)); }).catch(function (err) { failRow(li, file.name, err.message || 'เกิดข้อผิดพลาด'); });
+      });
+    }
+    d.evidence.forEach(function (e) { evList.appendChild(evRow(e)); });
+
+    let evidenceTools = null;
+    if (perms.edit) {
+      const fileInput = h('input', { type: 'file', multiple: true, hidden: true, accept: d.limits.allowedExt.map(function (x) { return '.' + x; }).join(','),
+        onchange: function (e) { uploadFiles(e.target.files); e.target.value = ''; } });
+      const drop = h('button', { type: 'button', class: 'drop', 'aria-describedby': 'h-ev', onclick: function () { fileInput.click(); } },
+        icon('upload', 'lg'), h('span', { style: 'font-weight:600' }, 'ลากไฟล์มาวาง หรือคลิกเพื่อเลือกไฟล์'),
+        h('span', { id: 'h-ev', class: 'muted', style: 'font-size:13px' }, d.limits.allowedExt.join(', ').toUpperCase() + ' · ไม่เกิน ' + d.limits.maxFileMb + ' MB'));
+      ['dragenter', 'dragover'].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
+      ['dragleave', 'drop'].forEach(function (t) { drop.addEventListener(t, function () { drop.classList.remove('over'); }); });
+      drop.addEventListener('drop', function (e) { e.preventDefault(); uploadFiles(e.dataTransfer.files); });
+      const linkInput = h('input', { class: 'inp', id: 'f-link', type: 'url', placeholder: 'https://drive.google.com/…' });
+      const linkErr = h('div', { class: 'err', hidden: true, id: 'e-link' });
+      linkInput.setAttribute('aria-describedby', 'e-link');
+      const addLink = function () {
+        const url = linkInput.value.trim();
+        if (!url) { linkInput.focus(); return; }
+        ensureSaved().then(function () { return U.api('apiAddEvidenceLink', rid, { url: url, name: '' }); }).then(function (ev) {
+          evList.appendChild(evRow(ev)); linkInput.value = ''; linkErr.hidden = true; linkInput.setAttribute('aria-invalid', 'false');
+        }).catch(function (err) {
+          linkErr.hidden = false; U.fill(linkErr, icon('alert'), err.message || 'เพิ่มลิงก์ไม่สำเร็จ'); linkInput.setAttribute('aria-invalid', 'true');
+        });
+      };
+      linkInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addLink(); } });
+      evidenceTools = h('div', { style: 'display:flex;flex-wrap:wrap;gap:12px' }, fileInput, drop,
+        h('div', { style: 'flex:1 1 220px' }, h('label', { class: 'lbl', for: 'f-link', style: 'font-weight:500;font-size:13px' }, 'หรือแนบลิงก์ Google Drive'),
+          h('div', { style: 'display:flex;gap:8px' }, linkInput, h('button', { type: 'button', class: 'btn btn-g', 'aria-label': 'เพิ่มลิงก์', onclick: addLink }, icon('link'))), linkErr));
+    }
+
+    // ---------- reviewer / approver actions ----------
+    let reviewBox = null;
+    if (perms.review || perms.approve || perms['return'] || perms.reopen) {
+      const cmt = h('textarea', { class: 'inp', id: 'f-comment', rows: 3, maxlength: 1000, placeholder: 'ระบุสิ่งที่ต้องแก้ไขให้ชัดเจน หรือข้อสังเกตประกอบการอนุมัติ', 'aria-describedby': 'e-comment' });
+      const cErr = h('div', { class: 'err', id: 'e-comment', hidden: true });
+      const act = function (action, okMsg, needComment) {
+        return function (ev) {
+          const btn = ev.currentTarget;
+          if (needComment && !cmt.value.trim()) {
+            cErr.hidden = false; U.fill(cErr, icon('alert'), 'กรุณาระบุความเห็นก่อนดำเนินการ'); cmt.setAttribute('aria-invalid', 'true'); cmt.focus();
+            return;
+          }
+          btn.setAttribute('aria-busy', 'true');
+          U.api('apiTransition', rid, action, cmt.value, m.version).then(function () {
+            U.toast(okMsg);
+            U.App.refreshInbox();
+            U.go('report', { id: a.activity_id, period: p }, false);
+          }).catch(handleErr).finally(function () { btn.removeAttribute('aria-busy'); });
+        };
+      };
+      reviewBox = h('div', { class: 'formbar', style: 'flex-direction:column;align-items:stretch' },
+        h('div', null, h('label', { class: 'lbl', for: 'f-comment' }, 'ความเห็น ', h('span', { class: 'muted', style: 'font-weight:400' }, '(จำเป็นเมื่อส่งกลับแก้ไข)')), cmt, cErr),
+        h('div', { class: 'actions', style: 'justify-content:flex-end' },
+          perms['return'] ? h('button', { type: 'button', class: 'btn btn-w', onclick: act('return', 'ส่งกลับให้แก้ไขแล้ว', true) }, icon('undo'), 'ส่งกลับแก้ไข') : null,
+          perms.reopen ? h('button', { type: 'button', class: 'btn btn-w', onclick: act('reopen', 'เปิดให้แก้ไขใหม่แล้ว', true) }, icon('undo'), 'เปิดให้แก้ไขใหม่ (Reopen)') : null,
+          perms.review ? h('button', { type: 'button', class: 'btn btn-p', onclick: act('review', 'ผ่านการตรวจแล้ว ส่งต่อผู้อำนวยการ', false) }, icon('check'), 'ผ่านการตรวจ ส่งผู้อำนวยการ') : null,
+          perms.approve ? h('button', { type: 'button', class: 'btn btn-p', onclick: act('approve', 'อนุมัติรายงานแล้ว', false) }, icon('check'), 'อนุมัติ') : null));
+    }
+
+    // ---------- page sections ----------
+    const periodSel = h('select', { class: 'inp', id: 'f-period', onchange: function (e) { U.go('report', { id: a.activity_id, period: e.target.value }); } },
+      d.planned.map(function (x) {
+        return h('option', { value: x.index, selected: x.index === p }, U.periodLabel(fy, x.index) + ' (รอบที่ ' + x.index + ') · ' + U.WSTATE[x.state || ''].t);
+      }));
+    const overdue = d.today > d.period.due && (!m.state || m.state === 'DRAFT' || m.state === 'RETURNED');
+    const stat = function (label, val, unit, color) {
+      return h('div', null, h('dt', null, label), h('dd', { class: 'num', style: color ? 'color:' + color : null }, val, unit ? h('small', null, ' ' + unit) : null));
+    };
+
+    const header = h('section', { class: 'glass card', style: 'display:flex;flex-wrap:wrap;gap:24px;justify-content:space-between' },
+      h('div', { style: 'flex:2 1 420px;min-width:0' },
+        h('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;align-items:center' },
+          h('span', { class: 'chip st-brand' }, a.value_code + ' · ' + a.value_name), h('span', { class: 'chip st-ok' }, a.dimension),
+          h('span', { class: 'num', style: 'font-size:14px;font-weight:700;color:var(--brand-700)' }, 'กิจกรรม ' + a.no), U.chip(a.status)),
+        h('h1', { id: 'page-title', tabindex: '-1', style: 'margin:10px 0 6px;font-size:26px;font-weight:700' }, a.name),
+        h('div', { style: 'font-size:14px;color:var(--text-2)' }, 'กลุ่มเป้าหมาย: ' + a.target_group + ' · ผู้รับผิดชอบ: ' + a.owner_unit),
+        h('div', { style: 'font-size:14px;color:var(--text-2);margin-top:2px' }, 'ตัวชี้วัด: ' + a.kpi)),
+      h('dl', { class: 'stats', style: 'flex:1 1 340px;align-self:center' },
+        stat('เป้าหมาย', U.fmtNum(a.target_value), a.unit),
+        stat('ผลที่อนุมัติ', U.fmtNum(a.value), a.value == null ? '' : a.unit),
+        stat('ความคืบหน้า', U.pct(a.progress) + '%', '', a.status === 'LATE' ? 'var(--late-fg)' : a.status === 'BELOW_TARGET' ? 'var(--risk-fg)' : null)));
+
+    const restoreSlot = h('div', { style: 'display:contents' });
+    const b = perms.edit ? store(function () { return JSON.parse(localStorage.getItem(BK) || 'null'); }) : null;
+    if (b && b.version === m.version && JSON.stringify(b.f) !== JSON.stringify(m.f)) {
+      restoreSlot.appendChild(U.banner('info', 'พบร่างที่ยังไม่ได้บันทึกในเครื่องนี้', null, h('div', { class: 'actions' },
+        h('button', { class: 'btn btn-g', type: 'button', onclick: function () { m.f = Object.assign({}, m.f, b.f); m.dirty = true; syncInputs(); refresh(); U.fill(restoreSlot); } }, 'กู้คืน'),
+        h('button', { class: 'btn btn-t', type: 'button', onclick: function () { clearBackup(); U.fill(restoreSlot); } }, 'ทิ้ง'))));
+    }
+
+    const lbl = function (k, text, req, extra) {
+      return h('label', { class: 'lbl', for: 'f-' + k }, text, req ? h('span', { class: 'req', 'aria-hidden': 'true' }, ' *') : null, extra || null);
+    };
+    etaBox.append(lbl('eta_date', 'วันที่คาดว่าจะแล้วเสร็จ', true), eta, etaHint, refs.eta_date.err);
+
+    const form = h('form', { class: 'glass form', 'aria-labelledby': 'h-form', novalidate: true, style: 'flex:2 1 560px;min-width:0', onsubmit: function (e) { e.preventDefault(); } },
+      h('div', { class: 'card-h', style: 'margin:0' }, h('h2', { id: 'h-form', style: 'font-size:20px' }, (ro && reviewBox ? 'ตรวจรายงานผล รอบ ' : 'รายงานผล รอบ ') + U.periodLabel(fy, p)), U.wchip(m.state)),
+      m.state === 'RETURNED' && r.return_comment ? U.banner('warn', 'ถูกส่งกลับให้แก้ไข', '“' + r.return_comment + '”') : null,
+      errSummary, conflictSlot, restoreSlot,
+      ro && !reviewBox ? U.banner('info', 'อ่านอย่างเดียว', m.state && m.state !== 'DRAFT' && m.state !== 'RETURNED' ? 'รายงานนี้ส่งแล้ว (' + U.WSTATE[m.state].t + ') จึงแก้ไขไม่ได้' : 'บทบาทของคุณดูรายงานได้แต่แก้ไขไม่ได้') : null,
+      h('div', { class: 'grid2' },
+        h('div', null, h('label', { class: 'lbl', for: 'f-period' }, 'รอบรายงาน'), periodSel,
+          h('div', { class: 'hint', style: overdue ? 'color:var(--late-fg);font-weight:600' : null },
+            'กำหนดส่ง ' + U.fmtDate(d.period.due) + (overdue ? ' · เลยกำหนดแล้ว' : ''))),
+        h('div', null, lbl('actual_value', a.measure_type === 'COUNT_CUMULATIVE' ? 'ผลสะสม' : 'ผลล่าสุด', true),
+          h('div', { class: 'unit' }, actual, h('span', null, a.unit)),
+          h('div', { class: 'hint', id: 'h-actual_value' }, a.measure_type === 'COUNT_CUMULATIVE'
+            ? 'ยอดสะสมตั้งแต่ ต.ค. ' + (fy - 1) + (d.prevValue != null ? ' · รอบก่อนที่อนุมัติ ' + U.fmtNum(d.prevValue) + ' (ห้ามน้อยกว่า)' : '')
+            : 'ค่าของรอบนี้ (ระบบใช้ค่าของรอบล่าสุดที่อนุมัติ)' + (a.formula_note ? ' · ' + a.formula_note : '')),
+          refs.actual_value.err)),
+      h('fieldset', null, h('legend', { class: 'lbl' }, 'สถานะการดำเนินงาน', h('span', { class: 'req', 'aria-hidden': 'true' }, ' *')),
+        h('div', { class: 'rcs' }, radios.map(function (x) { return x.card; })), refs.progress_status.err),
+      h('div', null, lbl('summary', 'สรุปผลการดำเนินงาน', true), summary, counter, refs.summary.err),
+      h('div', null, lbl('issues', 'ปัญหา / อุปสรรค', false, issuesReq), issues,
+        h('div', { class: 'hint', id: 'h-issues' }, 'จำเป็นเมื่อเลือกสถานะ "ล่าช้า" หรือ "ยังไม่เริ่ม"'), refs.issues.err),
+      h('div', { class: 'grid2' }, h('div', null, lbl('fix_plan', 'แนวทางแก้ไข'), fix, h('div', { class: 'hint', id: 'h-fix_plan' })), etaBox),
+      h('div', null, h('span', { class: 'lbl' }, 'หลักฐานประกอบ'), evidenceTools,
+        !perms.edit && !d.evidence.length ? h('p', { class: 'muted', style: 'margin:0;font-size:14px' }, 'ไม่มีหลักฐานแนบ') : null, evList),
+      perms.edit ? h('div', { class: 'formbar' }, saveStatus, h('div', { class: 'actions' },
+        U.link('activities', {}, { class: 'btn btn-t' }, 'ยกเลิก'), draftBtn, submitBtn)) : null,
+      reviewBox);
+
+    // ---------- sidebar ----------
+    const st = m.state;
+    const sent = ['SUBMITTED', 'REVIEWED', 'APPROVED'].indexOf(st) >= 0;
+    const reviewed = st === 'REVIEWED' || st === 'APPROVED';
+    const approved = st === 'APPROVED';
+    const steps = [
+      { t: 'ผู้รับผิดชอบส่งรายงาน', who: r.reporter_email || 'ผู้รับผิดชอบกิจกรรม', when: sent ? 'ส่งแล้ว ' + U.fmtDateTime(r.submitted_at) : st === 'RETURNED' ? 'ถูกส่งกลับให้แก้ไข' : 'กำลังจัดทำรายงาน', s: sent ? 'done' : 'cur' },
+      { t: 'หัวหน้ากลุ่มงานตรวจ', who: r.reviewer_email || 'หัวหน้ากลุ่มงาน', when: reviewed ? 'ตรวจแล้ว ' + U.fmtDateTime(r.reviewed_at) : st === 'SUBMITTED' ? 'รอการตรวจ' : 'รอดำเนินการ', s: reviewed ? 'done' : st === 'SUBMITTED' ? 'cur' : '' },
+      { t: 'ผู้อำนวยการฝ่ายอนุมัติ', who: r.approver_email || 'ผู้อำนวยการฝ่าย', when: approved ? 'อนุมัติแล้ว ' + U.fmtDateTime(r.approved_at) : st === 'REVIEWED' ? 'รอการอนุมัติ' : 'รอดำเนินการ', s: approved ? 'done' : st === 'REVIEWED' ? 'cur' : '' }
+    ];
+    const lastComment = function (x) { return x.workflow_state === 'RETURNED' ? x.return_comment : (x.approve_comment || x.review_comment || ''); };
+
+    const aside = h('aside', { style: 'flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:20px', 'aria-label': 'ข้อมูลประกอบ' },
+      h('section', { class: 'glass', style: 'padding:20px', 'aria-labelledby': 'h-flow' },
+        h('h2', { id: 'h-flow', style: 'font-size:18px;margin-bottom:14px' }, 'ขั้นตอนอนุมัติ'),
+        h('ol', { class: 'steps' }, steps.map(function (s, i) {
+          return h('li', null, h('span', { class: 'dot ' + s.s, 'aria-hidden': 'true' }, s.s === 'done' ? '✓' : String(i + 1)),
+            h('span', { style: 'line-height:1.45;min-width:0' },
+              h('span', { style: 'display:block;font-weight:600;font-size:14px' }, s.t,
+                h('span', { class: 'sr' }, s.s === 'done' ? ' (เสร็จแล้ว)' : s.s === 'cur' ? ' (ขั้นตอนปัจจุบัน)' : ' (ยังไม่ถึง)')),
+              h('span', { class: 'muted', style: 'display:block;font-size:13px;overflow-wrap:anywhere' }, s.who),
+              h('span', { style: 'display:block;font-size:13px;font-weight:600;color:' + (s.s === 'done' ? 'var(--ok-fg)' : s.s === 'cur' ? 'var(--late-fg)' : 'var(--text-muted)') }, s.when)));
+        }))),
+      h('section', { class: 'glass', style: 'padding:20px', 'aria-labelledby': 'h-hist' },
+        h('h2', { id: 'h-hist', style: 'font-size:18px;margin-bottom:6px' }, 'ประวัติรายงาน'),
+        d.history.length ? h('ul', { style: 'list-style:none;margin:0;padding:0' }, d.history.map(function (x) {
+          const c = lastComment(x);
+          return h('li', { style: 'padding:12px 0;border-bottom:1px solid rgba(15,42,31,.08)' },
+            h('div', { style: 'display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap' },
+              x.period_index === p ? h('strong', { style: 'font-size:14px' }, U.periodLabel(fy, x.period_index) + ' (รอบนี้)')
+                : U.link('report', { id: a.activity_id, period: x.period_index }, { style: 'font-size:14px;font-weight:700' }, U.periodLabel(fy, x.period_index)),
+              U.wchip(x.workflow_state)),
+            h('div', { class: 'muted num', style: 'font-size:13px' }, 'ผล ' + U.fmtNum(x.actual_value) + ' ' + a.unit +
+              (x.progress_status ? ' · ' + PS_TH[x.progress_status] : '') + ' · แก้ไขล่าสุด ' + U.fmtDate(x.updated_at)),
+            c ? h('div', { class: 'quote' }, '“' + c + '”') : null);
+        })) : h('p', { class: 'muted', style: 'margin:0;font-size:14px' }, 'ยังไม่มีรายงานของกิจกรรมนี้')),
+      h('section', { class: 'glass', style: 'padding:20px', 'aria-labelledby': 'h-dd' },
+        h('h2', { id: 'h-dd', style: 'font-size:18px' }, 'พฤติกรรมที่คาดหวัง'),
+        a.expected_outcome ? h('p', { class: 'muted', style: 'margin:4px 0 6px;font-size:13px' }, a.expected_outcome) : null,
+        d.guide.map(function (g, i) {
+          return h('details', { open: i === 0 }, h('summary', null, icon('chevron', 'chev'), g.role),
+            h('div', { class: 'dd' },
+              g['do'].map(function (t) { return h('div', null, h('span', { class: 'chip st-done' }, '✓ Do'), h('span', null, t)); }),
+              g.dont.map(function (t) { return h('div', null, h('span', { class: 'chip st-risk' }, "✕ Don't"), h('span', null, t)); })));
+        })));
+
+    U.fill(main, 
+      h('nav', { 'aria-label': 'breadcrumb', style: 'font-size:14px', class: 'muted' }, U.link('activities', {}, null, 'แผนและกิจกรรม'),
+        h('span', { 'aria-hidden': 'true' }, ' / '), 'กิจกรรม ' + a.no, h('span', { 'aria-hidden': 'true' }, ' / '), 'รอบ ' + U.periodLabel(fy, p)),
+      header, h('div', { class: 'row' }, form, aside));
+    if (m.exists && perms.edit) setSave('บันทึกล่าสุด · ' + U.fmtDateTime(r.updated_at));
+    refresh();
+
+    if (perms.edit) {
+      const timer = setInterval(function () {
+        if (!m.dirty || saving) return;
+        saveDraft(true).then(function (res) { U.toast('บันทึกร่างอัตโนมัติแล้ว · ' + U.fmtTime(res.updated_at)); }).catch(function () { });
+      }, 30000);
+      ctx.onCleanup(function () { clearInterval(timer); });
+    }
+  }
+})();
+</script>

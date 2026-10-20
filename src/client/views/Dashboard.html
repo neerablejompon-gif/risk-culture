@@ -1,0 +1,136 @@
+<script>
+/* 7.1 Dashboard ภาพรวม */
+(function () {
+  const U = window.UI, h = U.h, icon = U.icon;
+
+  function followNote(i) {
+    if (i.status === 'LATE' && i.reason === 'OVERDUE') return 'ค้างส่ง · เลยกำหนด ' + i.overdueDays + ' วัน';
+    if (i.status === 'LATE') return 'รายงานว่าดำเนินการล่าช้า';
+    return 'ผล ' + U.fmtNum(i.value) + ' / ' + U.fmtNum(i.target_value) + ' ' + i.unit + ' · ปิดรอบแล้ว';
+  }
+
+  function kpiCards(d) {
+    const r = d.kpi.round;
+    return h('section', { class: 'kpis', 'aria-label': 'ตัวชี้วัดหลัก' },
+      h('div', { class: 'glass kpi' }, h('div', { class: 'k' }, 'กิจกรรมทั้งหมด'), h('div', { class: 'v num' }, d.total),
+        h('div', { class: 'd' }, d.groups.length + ' ค่านิยม RUBBER · ' + d.total + ' ตัวชี้วัด')),
+      h('div', { class: 'glass kpi' }, h('div', { class: 'k' }, 'เสร็จสิ้น / ตามแผน'),
+        h('div', { class: 'v num', style: 'color:var(--done-fg)' }, d.kpi.doneOnTrack, h('small', null, ' / ' + d.kpi.started)),
+        h('div', { class: 'd' }, 'จากกิจกรรมที่เริ่มดำเนินการแล้ว')),
+      h('div', { class: 'glass kpi' + (d.kpi.late + d.kpi.below ? ' warn' : '') },
+        h('div', { class: 'k', style: 'color:var(--late-fg)' }, icon('alert'), 'ต้องติดตาม'),
+        h('div', { class: 'v num', style: 'color:var(--late-fg)' }, d.kpi.late + d.kpi.below),
+        h('div', { class: 'd' }, 'ล่าช้า ' + d.kpi.late + ' · ต่ำกว่าเป้า ' + d.kpi.below)),
+      h('div', { class: 'glass kpi' },
+        h('div', { class: 'k' }, r.p ? 'ส่งรายงานรอบ ' + U.periodLabel(d.fy, r.p) : 'ส่งรายงานรอบล่าสุด'),
+        h('div', { class: 'v num' }, r.sent, h('small', null, ' / ' + r.planned)),
+        U.progress(r.planned ? r.sent / r.planned : 0, 'สัดส่วนการส่งรายงานรอบล่าสุด'),
+        h('div', { class: 'd' }, r.p ? 'ค้างส่ง ' + (r.planned - r.sent) + ' รายการ · ครบกำหนด ' + U.fmtDate(r.due) : 'ยังไม่ถึงรอบรายงาน')));
+  }
+
+  function statusBar(d) {
+    const label = d.dist.map(function (x) { return U.STATUS[x.status].t + ' ' + x.n; }).join(', ');
+    return h('section', { class: 'glass card', 'aria-labelledby': 'h-status' },
+      h('div', { class: 'card-h' }, h('h2', { id: 'h-status' }, 'สถานะ ' + d.total + ' กิจกรรม'),
+        h('span', { class: 'muted', style: 'font-size:13px' }, 'คำนวณอัตโนมัติจากรอบรายงานและผลที่อนุมัติ')),
+      h('div', { class: 'stack', role: 'img', 'aria-label': label },
+        d.dist.filter(function (x) { return x.n; }).map(function (x) {
+          return h('span', { class: 'bar-' + U.STATUS[x.status].c, style: 'flex:' + x.n + ' 1 0' });
+        })),
+      h('ul', { class: 'legend' }, d.dist.map(function (x) {
+        return h('li', null, U.chip(x.status), h('span', { class: 'num', style: 'font-weight:700' }, x.n));
+      })));
+  }
+
+  function valueCards(d) {
+    return h('section', { 'aria-labelledby': 'h-values', style: 'flex:2 1 520px;min-width:0' },
+      h('div', { class: 'card-h' }, h('h2', { id: 'h-values', style: 'font-size:18px' }, 'ค่านิยม RUBBER × มิติ Risk Culture'),
+        U.link('activities', {}, { style: 'font-size:14px;font-weight:600' }, 'ดูทุกกิจกรรม')),
+      h('div', { class: 'vals' }, d.groups.map(function (g) {
+        const counts = U.STATUS_ORDER.filter(function (k) { return g.statuses.indexOf(k) >= 0; })
+          .map(function (k) { return g.statuses.filter(function (s) { return s === k; }).length + ' ' + U.STATUS[k].t; }).join(' · ');
+        return U.link('activities', { value: g.group_no }, { class: 'glass vcard', 'aria-label': g.value_name + ' — ' + g.dimension + ': ' + counts },
+          h('div', { style: 'display:flex;align-items:center;gap:12px' }, h('div', { class: 'vletter', 'aria-hidden': 'true' }, g.value_code),
+            h('div', { style: 'line-height:1.35;min-width:0' }, h('div', { style: 'font-weight:700' }, g.value_name),
+              h('div', { class: 'muted', style: 'font-size:13px' }, g.dimension))),
+          h('div', { class: 'mini', 'aria-hidden': 'true' }, g.statuses.map(function (s) { return h('span', { class: 'bar-' + U.STATUS[s].c }); })),
+          h('div', { style: 'font-size:13px;color:var(--text-2)' }, counts));
+      })));
+  }
+
+  function followList(d) {
+    return h('section', { class: 'glass', 'aria-labelledby': 'h-follow', style: 'flex:1 1 320px;min-width:0;padding:20px' },
+      h('div', { class: 'card-h', style: 'margin:0' }, h('h2', { id: 'h-follow' }, 'ต้องติดตาม'),
+        h('span', { class: 'muted num', style: 'font-size:13px' }, d.follow.length + ' กิจกรรม')),
+      d.follow.length ? h('ul', { class: 'flist', style: 'margin-top:12px' }, d.follow.map(function (i) {
+        return h('li', null, U.link('report', { id: i.activity_id }, null,
+          h('span', { class: 'num', style: 'font-weight:700;min-width:32px;color:var(--brand-700)' }, i.no),
+          h('span', { style: 'flex:1;min-width:0;display:flex;flex-direction:column;gap:4px' },
+            h('span', { style: 'font-weight:600;font-size:14px;line-height:1.5' }, i.name),
+            h('span', { style: 'display:flex;flex-wrap:wrap;gap:8px;align-items:center' }, U.chip(i.status),
+              h('span', { class: 'muted', style: 'font-size:13px' }, followNote(i)))),
+          icon('chevron')));
+      })) : h('p', { class: 'muted', style: 'margin:12px 0 0;font-size:14px' }, 'ไม่มีกิจกรรมที่ต้องติดตาม'));
+  }
+
+  function monthly(d) {
+    const max = Math.max.apply(null, d.monthly.map(function (m) { return m.planned; }).concat([1]));
+    const aria = d.monthly.map(function (m) {
+      return U.MONTHS[m.p - 1] + ' ' + (m.past ? 'ส่งตรงเวลา ' + m.onTime + ' จาก ' + m.planned : 'ตามแผน ' + m.planned + ' รอบ');
+    }).join(', ');
+    return h('section', { class: 'glass card', 'aria-labelledby': 'h-monthly' },
+      h('div', { class: 'card-h' }, h('h2', { id: 'h-monthly' }, 'การส่งรายงานรายเดือน'),
+        h('div', { style: 'display:flex;flex-wrap:wrap;gap:16px;font-size:13px;color:var(--text-2)' },
+          h('span', { style: 'display:flex;align-items:center;gap:6px' }, h('span', { 'aria-hidden': 'true', style: 'width:12px;height:12px;border-radius:3px;background:var(--brand-600)' }), 'ส่งตรงเวลา'),
+          h('span', { style: 'display:flex;align-items:center;gap:6px' }, h('span', { 'aria-hidden': 'true', style: 'width:12px;height:12px;border-radius:3px;background:#CFEBDB' }), 'ถึงรอบรายงาน'),
+          h('span', { style: 'display:flex;align-items:center;gap:6px' }, h('span', { 'aria-hidden': 'true', style: 'width:12px;height:12px;border-radius:3px;border:2px dashed var(--ok-c)' }), 'แผนรอบถัดไป'))),
+      h('div', { class: 'scroll-x', style: 'margin-top:8px' },
+        h('div', { class: 'months', role: 'img', 'aria-label': aria }, d.monthly.map(function (m) {
+          const hgt = Math.round(m.planned / max * 100);
+          return h('div', { class: 'month' + (m.p === d.currentPeriod ? ' now' : '') },
+            h('span', { class: 'num', style: 'font-weight:600;color:var(--text-2)' }, m.past ? m.onTime + '/' + m.planned : String(m.planned)),
+            h('div', { class: 'mcol' }, m.planned ? h('div', { class: 'mbar' + (m.past ? '' : ' future'), style: 'height:' + hgt + '%' },
+              m.past && m.planned ? h('span', { style: 'height:' + Math.round(m.onTime / m.planned * 100) + '%' }) : null) : null),
+            h('b', { style: 'font-weight:' + (m.p === d.currentPeriod ? 700 : 500) }, U.MONTHS[m.p - 1]));
+        }))),
+      d.nextRound ? h('div', { class: 'note' },
+        h('span', { style: 'display:flex;align-items:center;gap:12px' }, icon('calendar'),
+          h('span', null, h('strong', null, 'รอบถัดไป ' + U.periodLabel(d.fy, d.nextRound.p)), ' · ' + d.nextRound.planned + ' กิจกรรม · กำหนดส่ง ' + U.fmtDate(d.nextRound.due))),
+        U.link('mytasks', {}, { class: 'btn btn-g' }, 'ดูงานของฉัน')) : null);
+  }
+
+  window.Views.dashboard = async function (main, params, ctx) {
+    const fy = Number(params.fy) || U.App.fy;
+    const d = await U.api('apiGetDashboard', fy);
+    if (!ctx.alive()) return;
+    const exportSlot = h('div', { style: 'display:contents' });
+    const exportBtn = h('button', {
+      class: 'btn btn-g', type: 'button', onclick: function () {
+        exportBtn.setAttribute('aria-busy', 'true');
+        U.api('apiExportSummary', fy).then(function (r) {
+          U.fill(exportSlot, U.banner('ok', 'สร้างไฟล์สรุปแล้ว', h('a', { href: r.url, target: '_blank', rel: 'noopener' }, 'เปิด Google Sheet สรุปผล')));
+        }).catch(function (e) { U.toast(e.message, 'error'); }).finally(function () { exportBtn.removeAttribute('aria-busy'); });
+      }
+    }, icon('download'), 'ส่งออกรายงาน');
+    const fySel = h('select', { class: 'field', style: 'width:auto;font-weight:600', onchange: function (e) { U.go('dashboard', { fy: e.target.value }); } },
+      U.App.fiscalYears.map(function (y) { return h('option', { value: y, selected: y === fy }, String(y)); }));
+
+    const parts = [
+      U.pageHeader({
+        eyebrow: 'ฝยศ. / กบค. · แผนปฏิบัติการเสริมสร้างค่านิยมและวัฒนธรรมความเสี่ยง',
+        title: 'ภาพรวมปีงบประมาณ ' + fy,
+        sub: ['ข้อมูล ณ ' + U.fmtDateTime(d.asOf), ' · นับเฉพาะผลที่อนุมัติแล้ว'],
+        actions: [h('label', { class: 'label', style: 'flex-direction:row;align-items:center;gap:8px;font-size:14px' }, 'ปีงบประมาณ', fySel), exportBtn,
+          U.link('mytasks', {}, { class: 'btn btn-p' }, icon('filePlus'), 'รายงานผลรอบนี้')]
+      }),
+      exportSlot
+    ];
+    if (!d.total) {
+      parts.push(U.emptyState('ยังไม่มีกิจกรรมในปีงบประมาณ ' + fy, 'ผู้ดูแลระบบต้องรัน seedActivitiesFromSheet() เพื่อนำเข้ากิจกรรมจากแท็บ "แผน/ผล"'));
+    } else {
+      parts.push(kpiCards(d), statusBar(d), h('div', { class: 'row' }, valueCards(d), followList(d)), monthly(d));
+    }
+    U.fill(main, parts);
+  };
+})();
+</script>

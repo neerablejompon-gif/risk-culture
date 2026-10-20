@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Risk Culture Tracker · กยท.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <?!= include('client/Styles'); ?>
+</head>
+<body>
+  <a class="skip" href="#main">ข้ามไปยังเนื้อหาหลัก</a>
+  <div class="app">
+    <aside class="glass side" id="side" aria-label="เมนูหลัก"></aside>
+    <main class="content" id="main" tabindex="-1" aria-live="polite" aria-busy="true"></main>
+  </div>
+  <nav class="bnav" id="bnav" aria-label="เมนูหลัก (มือถือ)"></nav>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <!--DEV_HOOK-->
+  <?!= include('client/App.js'); ?>
+  <?!= include('client/views/Dashboard'); ?>
+  <?!= include('client/views/Activities'); ?>
+  <?!= include('client/views/Report'); ?>
+  <?!= include('client/views/MyTasks'); ?>
+  <?!= include('client/views/Inbox'); ?>
+  <?!= include('client/views/Guidelines'); ?>
+  <script>App.start();</script>
+</body>
+</html>
